@@ -1,0 +1,46 @@
+---
+name: Validate
+
+on:
+  pull_request:
+    branches:
+      - main
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    name: Validate
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Setup OpenTofu
+        uses: opentofu/setup-opentofu@a1320f892987e89d278cc92dc5adc984fb93aca4 # v2.0.2
+        with:
+          tofu_version: 1.12.3
+          tofu_wrapper: false
+
+      # None of these steps need Proxmox credentials: the tests mock both providers.
+      - name: Format
+        run: tofu fmt -check -recursive
+
+      - name: Init
+        run: tofu init -backend=false -input=false -lockfile=readonly
+
+      - name: Validate
+        run: tofu validate
+
+      - name: Test
+        run: tofu test

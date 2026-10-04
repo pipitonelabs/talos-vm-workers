@@ -1,0 +1,39 @@
+# OpenTofu / Terraform working files and state
+.terraform/
+*.tfstate
+*.tfstate.*
+crash.log
+crash.*.log
+.terraformrc
+terraform.rc
+
+# Saved plans embed provider credentials in plain text. Never commit one.
+*.tfplan
+*.tfout
+*.plan
+tfplan*
+plan.out
+
+# Local overrides, for example backend_override.tf with a remote state backend
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+
+# Variable files: only the committed inventory is allowed. Credentials come from the environment.
+*.tfvars
+*.tfvars.json
+!workers.auto.tfvars
+
+# Plain-text environment files. op.env is committed because it holds secret references, not secrets.
+.env
+.env.*
+
+# Keys and client configs
+*.pem
+*.key
+talosconfig
+kubeconfig
+*.kubeconfig
+
+.DS_Store
