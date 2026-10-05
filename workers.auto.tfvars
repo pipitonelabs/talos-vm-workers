@@ -7,9 +7,9 @@ talos_version = "v1.14.0"
 
 proxmox_node    = "pve"
 image_datastore = "local"
-vm_datastore    = "local-lvm"
+vm_datastore    = "datafast"
 bridge          = "vmbr0"
-vlan_id         = null
+vlan_id         = 10
 
 gateway     = "192.168.10.1"
 dns_servers = ["192.168.10.1"]
