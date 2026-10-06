@@ -74,6 +74,7 @@ variable "nodes" {
     memory_mb    = optional(number, 8192)
     disk_gb      = optional(number, 100)
     mac_address  = optional(string)
+    nic_queues   = optional(number)
     proxmox_node = optional(string)
     started      = optional(bool, true)
   }))
@@ -106,6 +107,11 @@ variable "nodes" {
   validation {
     condition     = alltrue([for node in values(var.nodes) : node.mac_address == null || can(regex("^([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}$", node.mac_address))])
     error_message = "mac_address must look like BC:24:11:00:00:71."
+  }
+
+  validation {
+    condition     = alltrue([for node in values(var.nodes) : node.nic_queues == null || (node.nic_queues >= 1 && node.nic_queues <= 64 && floor(node.nic_queues) == node.nic_queues)])
+    error_message = "nic_queues must be a whole number from 1 to 64 (the Proxmox limit)."
   }
 
   validation {

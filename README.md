@@ -117,7 +117,8 @@ nodes = {
 ```
 
 Per-node settings: `vm_id` and `ip` are required; `cores` (4), `memory_mb` (8192), `disk_gb` (100),
-`mac_address` (derived), `proxmox_node` (the default node) and `started` (`true`) are optional.
+`mac_address` (derived), `nic_queues` (twice `cores`, at most 64), `proxmox_node` (the default node) and `started`
+(`true`) are optional.
 [`schematic.yaml`](schematic.yaml) sets the system extensions baked into the image.
 
 ## Joining a node to the cluster
@@ -145,6 +146,15 @@ What the worker config has to account for on these VMs:
 - **Hardware-specific settings.** Leave out anything that belongs to physical machines: bonds, NIC ring sizes,
   CPU frequency tuning, GPU labels. `/dev/watchdog0` exists when `watchdog = true` (the default), so a
   `WatchdogTimerConfig` works.
+
+### Network queues
+
+Each VM's virtio NIC gets `2 x cores` queues (capped at Proxmox's limit of 64). A CNI that attaches XDP programs to
+the NIC, such as Cilium with `loadBalancer.acceleration: best-effort`, needs one extra TX queue per vCPU. With a
+single-queue NIC the Talos kernel logs `virtio_net ... XDP request 9 queues but max is 1. XDP_TX and XDP_REDIRECT
+will operate in a slower locked tx mode.` The VM still works, only slower for XDP forwarding. Set `nic_queues` on a
+node to override the default. Changing the queue count takes effect after the VM restarts, so drain a node that is
+already in the cluster first.
 
 ## Storage
 

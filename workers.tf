@@ -3,6 +3,11 @@ locals {
     for name, node in var.nodes : name => merge(node, {
       proxmox_node = coalesce(node.proxmox_node, var.proxmox_node)
       ipv4         = split("/", node.ip)[0]
+      # virtio-net multiqueue. A CNI that attaches XDP programs to the NIC (Cilium's load-balancer
+      # acceleration) needs one TX queue per vCPU on top of the queues in use, otherwise the kernel logs
+      # "XDP request N queues but max is 1" and falls back to a slower locked mode. Twice the vCPU count
+      # covers that; Proxmox allows at most 64.
+      nic_queues = coalesce(node.nic_queues, min(64, 2 * node.cores))
       # A stable MAC keeps the VM's identity on the network if it is ever recreated. BC:24:11 is the
       # Proxmox prefix; the rest is the low 24 bits of the VM ID.
       mac_address = upper(coalesce(node.mac_address, format(
@@ -91,6 +96,7 @@ resource "proxmox_virtual_environment_vm" "worker" {
     model       = "virtio"
     mac_address = each.value.mac_address
     vlan_id     = var.vlan_id
+    queues      = each.value.nic_queues
   }
 
   # Proxmox renders this into a cloud-init drive. Talos reads the address, gateway, DNS servers and

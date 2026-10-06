@@ -169,3 +169,42 @@ run "rejects_invalid_name" {
 
   expect_failures = [var.nodes]
 }
+
+run "nic_queues_follow_the_vcpu_count" {
+  command = plan
+
+  variables {
+    nodes = {
+      a = { vm_id = 201, ip = "192.168.10.21/24", cores = 8 }
+      b = { vm_id = 202, ip = "192.168.10.22/24", cores = 64 }
+      c = { vm_id = 203, ip = "192.168.10.23/24", cores = 4, nic_queues = 1 }
+    }
+  }
+
+  assert {
+    condition     = proxmox_virtual_environment_vm.worker["a"].network_device[0].queues == 16
+    error_message = "queues must default to twice the vCPU count so virtio-net XDP gets one TX queue per vCPU."
+  }
+
+  assert {
+    condition     = proxmox_virtual_environment_vm.worker["b"].network_device[0].queues == 64
+    error_message = "queues must be capped at the Proxmox limit of 64."
+  }
+
+  assert {
+    condition     = proxmox_virtual_environment_vm.worker["c"].network_device[0].queues == 1
+    error_message = "An explicit nic_queues must win over the default."
+  }
+}
+
+run "nic_queues_above_the_proxmox_limit_is_rejected" {
+  command = plan
+
+  variables {
+    nodes = {
+      a = { vm_id = 201, ip = "192.168.10.21/24", nic_queues = 65 }
+    }
+  }
+
+  expect_failures = [var.nodes]
+}
