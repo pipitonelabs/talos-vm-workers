@@ -1,0 +1,16 @@
+{
+  $schema: "https://docs.renovatebot.com/renovate-schema.json",
+  extends: ["config:recommended", "helpers:pinGitHubActionDigests", ":semanticCommits"],
+  customManagers: [
+    {
+      customType: "regex",
+      description: "Talos version used for new VM images",
+      managerFilePatterns: ["/\\.tfvars$/"],
+      matchStrings: [
+        // # renovate: datasource=github-releases depName=siderolabs/talos
+        // talos_version = "v1.14.0"
+        "# renovate: datasource=(?<datasource>\\S+) depName=(?<depName>\\S+)\\n\\s*talos_version\\s*=\\s*\"(?<currentValue>[^\"]+)\"",
+      ],
+    },
+  ],
+}
