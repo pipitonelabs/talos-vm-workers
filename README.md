@@ -7,9 +7,9 @@ It creates the machines and nothing else. Each VM boots a Talos image at a stati
 maintenance mode; the machine config that makes it join the cluster is applied from wherever that config
 already lives. No cluster secret ever enters this repo or its state.
 
-> **Status.** Validated offline: `tofu validate`, the mocked tests in `tests/`, and a plan against a dummy
-> endpoint. The image and installer it references exist in the Image Factory. It has **not yet been applied
-> to a real Proxmox host**, so treat the first `just apply` as the real test.
+> **Status.** Applied to a real Proxmox VE host: two VMs were created, joined an existing Talos 1.14 /
+> Kubernetes cluster as workers and passed a workload test (pod networking, DNS, Ceph RBD and NFS volumes).
+> Offline checks (`tofu validate` and the mocked tests in `tests/`) run in CI.
 
 ## How it works
 
@@ -60,8 +60,9 @@ and the [1Password CLI](https://developer.1password.com/docs/cli/) if you keep t
   bridge, which should come down to roughly: `VM.Allocate`, `VM.Audit`, `VM.PowerMgmt`, `VM.GuestAgent.Audit`,
   `VM.Config.CPU`, `VM.Config.Memory`, `VM.Config.Disk`, `VM.Config.Network`, `VM.Config.Options`,
   `VM.Config.HWType`, `VM.Config.Cloudinit`, `VM.Config.CDROM`, `Datastore.Audit`, `Datastore.AllocateSpace`,
-  `Datastore.AllocateTemplate`, `Sys.Audit`, `Sys.AccessNetwork`, `SDN.Use`. That list has not been verified
-  against a live host, and privilege names differ between PVE 8 and 9.
+  `Datastore.AllocateTemplate`, `Sys.Audit`, `Sys.AccessNetwork`, `SDN.Use`. That exact list was enough to create,
+  change and restart the VMs on a live host; privilege names can differ between PVE 8 and 9. See
+  [Creating the API user and token](#creating-the-api-user-and-token) for the permission paths and a gotcha.
 
 ## Credentials
 
@@ -84,6 +85,32 @@ TF_RUNNER="" just plan
 
 Never save a plan to a file you might commit (`-out`): a saved plan embeds the token in plain text. The
 `.gitignore` blocks the usual names, but the safe habit is not to create one inside the repo.
+
+### Creating the API user and token
+
+Use a dedicated user with a least-privilege role and a **privilege-separated** token, never `root@pam`. Run this
+once in the Proxmox shell (adjust the node name, storage IDs and expiry):
+
+```sh
+pveum role add TalosWorkers -privs "VM.Allocate VM.Audit VM.PowerMgmt VM.GuestAgent.Audit VM.Config.CPU VM.Config.Memory VM.Config.Disk VM.Config.Network VM.Config.Options VM.Config.HWType VM.Config.Cloudinit VM.Config.CDROM Datastore.Audit Datastore.AllocateSpace Datastore.AllocateTemplate Sys.Audit Sys.AccessNetwork SDN.Use"
+pveum user add tofu@pve --comment "OpenTofu worker VMs"
+pveum user token add tofu@pve provider --privsep 1 --expire "$(date -d '+30 days' +%s)"   # prints the secret once
+for path in /vms /storage/local /storage/<vm-datastore> /sdn/zones/localnetwork /nodes/<node>; do
+  pveum aclmod "$path" -user 'tofu@pve' -role TalosWorkers      # see the gotcha below
+  pveum aclmod "$path" -token 'tofu@pve!provider' -role TalosWorkers
+done
+```
+
+- **Grant the role to the user as well as the token.** With privilege separation a token's effective permissions
+  are the *intersection* of the token's and its user's permissions. A token with the role but an unprivileged user
+  authenticates fine (`/version` returns 200) and then has no permissions at all.
+- **The full token value** is `user@realm!tokenid=<uuid>`, and the token ID must match the name you created
+  (`provider` above). The secret is shown only once; if you lose it, remove and recreate the token (this also
+  deletes its ACLs).
+- A 401 means the token itself is wrong; a working token with an empty `GET /access/permissions` means missing ACLs.
+- **TLS:** the provider verifies the Proxmox certificate. For a self-signed or private CA, trust it on your
+  workstation (for example add `/etc/pve/pve-root-ca.pem` to the system trust store) or set
+  `PROXMOX_VE_INSECURE=true` on a trusted network only.
 
 ## Usage
 
@@ -120,6 +147,29 @@ Per-node settings: `vm_id` and `ip` are required; `cores` (4), `memory_mb` (8192
 `mac_address` (derived), `nic_queues` (twice `cores`, at most 64), `proxmox_node` (the default node) and `started`
 (`true`) are optional.
 [`schematic.yaml`](schematic.yaml) sets the system extensions baked into the image.
+
+## From zero to a working worker
+
+1. **Proxmox:** the API user and token above; a datastore that allows the Import content type; a VM datastore;
+   a VLAN-aware bridge if `vlan_id` is set. Put the endpoint and token in the secret store `op.env` points at.
+2. **Create the VMs:** edit `workers.auto.tfvars`, then `just init`, `just check`, `just plan`, `just apply`. The VMs
+   boot into Talos maintenance mode at their static address (`just wait w0` blocks until the API answers).
+3. **Cluster-side prerequisites** (these live in your cluster repo, not here):
+   - The CNI must use the VM's NIC (`eth0`), for example Cilium `devices: [bond+, eth+]`.
+   - If a descheduler balances load, an empty worker makes it evict pods from busy nodes. Scope its node selector
+     to the existing nodes until you want that balancing.
+   - Keep Ceph daemons (mon, mgr, MDS, OSD) off the VMs with a node affinity; the VMs are Ceph clients only.
+   - If the router peers over BGP per node, add the new addresses as neighbors.
+4. **Join:** apply the worker machine config (see below). The node registers and goes `Ready` within about 30
+   seconds; DaemonSets start on it.
+5. **Verify:** `kubectl get nodes` shows the node `Ready`; a pod pinned to it (`nodeName`) can resolve DNS, reach
+   pods on other nodes in both directions and mount your storage.
+6. **Optional role label:** `kubectl get nodes` shows `<none>` for the role of a worker. The ROLES column is built
+   from `node-role.kubernetes.io/<role>` labels, and a worker's kubelet may not set that prefix on itself
+   (Kubernetes `NodeRestriction`; Talos applies labels with the kubelet's credentials on workers, with
+   control-plane credentials on control-plane nodes). Add it as an admin:
+   `kubectl label node w0 node-role.kubernetes.io/worker=`. It is cosmetic, but you must re-add it if the node is
+   ever deleted and re-registered.
 
 ## Joining a node to the cluster
 
@@ -184,6 +234,12 @@ Rook/Ceph:
   matches the cluster's device filter, and this configuration attaches no data disks, so it finds nothing.
   An explicit node list in the `CephCluster` avoids even the job.
 
+**Ceph with msgr2.** If your Ceph cluster requires msgr2 (`requireMsgr2: true`), CephFS kernel mounts need
+`ms_mode=prefer-crc` (or `secure`), because the kernel client defaults to msgr v1 and the mons close the connection
+(`libceph: ... (con state V1_BANNER)`, then "no mds (Metadata Server) is up"). That is a cluster setting, not a VM
+setting. With the ceph-csi-operator, Rook reads it from `CephCluster.spec.csi.cephfs.kernelMountOptions`. RBD is not
+affected.
+
 Running **Ceph OSDs inside these VMs** is a different project and is not configured here. If you go that way:
 give the OSD whole physical disks (pass through the disks or the HBA, never a virtual disk on top of ZFS,
 LVM or RAID); keep to one OSD VM per physical host, or model the host in the CRUSH map, because Ceph treats
@@ -203,6 +259,33 @@ the slowest OSD and its network link to set the pace for writes across the pool.
   reboot (`talosctl get volumestatus`). Shrinking is not possible.
 - **Recreate a node:** `just destroy -target='proxmox_virtual_environment_vm.worker["w0"]'`, then `just apply`.
   It comes back with the same address and MAC, in maintenance mode.
+
+### Applying a hardware-level change to a running node
+
+Changes such as the NIC queue count are stored as *pending* in Proxmox and only take effect after the VM restarts
+(a restart from inside the guest is not enough). For a node that is already in the cluster:
+
+```sh
+kubectl drain w0 --ignore-daemonsets --delete-emptydir-data
+# Proxmox "reboot" shuts the VM down and starts it again, applying pending changes (needs VM.PowerMgmt):
+curl -s -X POST -H "Authorization: PVEAPIToken=$PROXMOX_VE_API_TOKEN" \
+  "${PROXMOX_VE_ENDPOINT}api2/json/nodes/<node>/qemu/<vm_id>/status/reboot"
+kubectl uncordon w0
+```
+
+A configured Talos node boots back with its stored config and rejoins on its own. A node still in maintenance mode
+can simply be restarted.
+
+## Troubleshooting
+
+| Symptom | Cause and fix |
+|---|---|
+| `x509: certificate is not trusted` during `plan` or `apply` | The workstation does not trust the Proxmox certificate; trust its CA (see [Credentials](#creating-the-api-user-and-token)). |
+| `401` / "Authentication failed" | Wrong token value or token ID; recreate the token. A working token with no permissions needs the role on the user as well (see above). |
+| VM boots but is unreachable | Wrong `vlan_id`, or the bridge is not VLAN-aware. Changing `vlan_id` is applied live. |
+| Kernel log: `XDP request N queues but max is 1` | A single-queue virtio NIC with a CNI that attaches XDP. This module sets `2 x cores` queues by default; restart the VM after changing it. |
+| Node `Ready` but ROLES is `<none>` | Cosmetic; see step 6 of [From zero to a working worker](#from-zero-to-a-working-worker). |
+| CephFS volume stays `ContainerCreating` with "no mds is up" | msgr2 and the kernel mount option; see the Ceph note under [Storage](#storage). |
 
 ## State
 
